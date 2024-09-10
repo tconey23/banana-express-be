@@ -64,7 +64,7 @@ const findPath = async () => {
         console.log('Path found:', path.join(' -> '));
         console.log('Writing path to file...');
         writePathToFile(path);
-    } else {
+    } else { 
         console.log('No path found.');
     }
 }

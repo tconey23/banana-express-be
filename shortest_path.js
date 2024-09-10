@@ -59,7 +59,7 @@ async function bfsShortestPath(startArticle, endArticle) {
     return null;
 }
 
-function writePathToFile(path) {
+function writePathToFile(path) { 
     try { 
         const jsonPath = 'paths.json';
         fs.writeFileSync(jsonPath, JSON.stringify({ path }, null, 2), 'utf8');
