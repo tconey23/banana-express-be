@@ -4,6 +4,8 @@
     "nodemon": "^3.1.4"
   },
   "scripts": {
-  "start": "nodemon --experimental-fetch index.js"
+  "start": "nodemon --experimental-fetch index.js",
+  "shortest": "nodemon --experimental-fetch shortest_path.js",
+  "depth": "nodemon --experimental-fetch depth_first.js"
 }
 }

@@ -1,5 +1,5 @@
 {
-    "watch": ["src", "index.js"],
+    "watch": ["src", "index.js", "shortest_path.js", "depth_first.js"],
     "ignore": ["test/*", "data/*", "public/*", "featuredArticle.json"], 
     "ext": "js,json" 
   }
