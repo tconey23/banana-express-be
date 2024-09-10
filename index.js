@@ -1,131 +1,124 @@
 const express = require('express');
-const fs = require('fs'); // File system module to write files
+const fs = require('fs');
+const fetch = global.fetch;
 
 const app = express();
-const port = process.env.PORT || 5001;
+const port = process.env.PORT || 3001;
 
 app.use(express.json());
 
-// Helper function to delay execution (rate limiting or retry delay)
-const sleep = (milliseconds) => {
-    return new Promise(resolve => setTimeout(resolve, milliseconds));
-};
+let linkCount = 0;
 
-// Function to make requests with exponential backoff
-const fetchWithExponentialBackoff = async (url, retries = 5, retryDelay = 1000) => {
-    let attempt = 0;
+let depth = 1;
+const MAX_DEPTH = 2; // Set a maximum recursion depth
 
-    while (attempt < retries) {
-        try {
-            const response = await fetch(url);
+// Function to fetch article links
+const fetchLinks = async (url) => {
+    linkCount += 1;
+    console.log(linkCount);
 
-            if (response.ok) {
-                return await response.json(); // Return response if successful
-            } else if (response.status === 429) {
-                // Handle rate limiting (Too Many Requests)
-                console.log(`Rate limited. Waiting for ${retryDelay / 1000} seconds...`);
-                
-                const retryAfter = response.headers.get('Retry-After');
-                if (retryAfter) {
-                    // If server provides Retry-After header, respect it
-                    await sleep(parseInt(retryAfter) * 1000);
-                } else {
-                    await sleep(retryDelay); // Fallback to exponential backoff
-                }
-            } else {
-                // Log non-429 HTTP errors
-                throw new Error(`HTTP Error: ${response.status} - ${response.statusText}`);
-            }
-        } catch (error) {
-            // Log the error and retry
-            console.log(`Error: ${error.message}. Retrying in ${retryDelay / 1000} seconds...`);
-
-            // Exponential backoff delay
-            await sleep(retryDelay);
-
-            // Double the delay for the next retry
-            retryDelay *= 2;
-            attempt++;
-        }
-    }
-
-    // If all retries are exhausted, throw a new error
-    throw new Error('Max retries reached');
-};
-
-// Modified getRelatedArticles function with rate limiting, depth control, and exponential backoff
-const getRelatedArticles = async (articleTitle, depth = 1, maxDepth = 2, maxCallsPerMinute = 60, retryDelay = 1000) => {
-    if (depth > maxDepth) {
-        // Prevent too much nesting by stopping when maxDepth is reached
-        return [];
-    }
-
-    console.log(`Fetching related articles for: ${articleTitle}, depth: ${depth}`);
-
-    const url = `https://en.wikipedia.org/api/rest_v1/page/related/${encodeURIComponent(articleTitle)}`;
+    const exclude = ['Template:', 'Template Talk:', 'Category:', 'Wikipedia'];
 
     try {
-        const data = await fetchWithExponentialBackoff(url, 5, retryDelay); // Fetch with backoff
+        const response = await fetch(url);
+        const data = await response.json();
+        let linkArray = [];
 
-        // Extract related articles and apply rate limiting
-        const relatedArticles = await Promise.all(
-            data.pages ? data.pages.map(async (page) => {
-                // Rate limiting: pause before each request
-                await sleep(60000 / maxCallsPerMinute); // Delay to enforce maxCallsPerMinute
-
-                // Fetch related articles for each related article (recursive call)
-                const nestedRelatedArticles = await getRelatedArticles(page.title, depth + 1, maxDepth, maxCallsPerMinute, retryDelay);
-
-                return {
-                    title: page.title,
-                    relatedArticles: nestedRelatedArticles
-                };
-            }) : []
-        );
-
-        return relatedArticles;
+        if (data.query && data.query.pages) {
+            data.query.pages.forEach((pg) => {
+                if (pg.links) {
+                    pg.links.forEach((link) => {
+                        // Exclude links whose titles contain any of the strings in the exclude array
+                        if (!exclude.some(ex => link.title.toLowerCase().includes(ex.toLowerCase()))) {
+                            linkArray.push({
+                                title: link.title,
+                                links: []
+                            });
+                        }
+                    });
+                }
+            });
+        }
+        return linkArray;
     } catch (error) {
-        console.log(`Failed to fetch related articles for ${articleTitle}: ${error.message}`);
-        return []; // Return an empty array if fetching fails
+        console.log('Error fetching links:', error);
+        return [];
     }
 };
 
-const getFeaturedArticle = async (maxDepth = 2) => {
+// Function to fetch the featured article and its links
+const fetchFeaturedArticle = async () => {
     const date = new Date(Date.now());
 
     const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0'); // months are zero-indexed, so add 1
+    const month = String(date.getMonth() + 1).padStart(2, '0');
     const day = String(date.getDate()).padStart(2, '0');
-    
+
     const url = `https://en.wikipedia.org/api/rest_v1/feed/featured/${year}/${month}/${day}`;
 
     try {
-        const data = await fetchWithExponentialBackoff(url, 5, 1000); // Fetch with backoff
+        const response = await fetch(url);
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const data = await response.json();
+
+        const featuredArticleTitle = data.tfa ? data.tfa.title : 'No featured article available';
+        const apiUrl = `https://en.wikipedia.org/w/api.php?action=query&format=json&prop=links&titles=${encodeURIComponent(featuredArticleTitle)}&formatversion=2&pllimit=max`;
+
+        const links = await fetchLinks(apiUrl);
 
         const featuredArticle = {
-            title: data.tfa ? data.tfa.title : 'No featured article available',
+            title: featuredArticleTitle,
+            links: links.length > 0 ? links : 'No links available'
         };
 
-        // If there is a featured article, fetch its related articles with the specified depth
-        if (featuredArticle.title !== 'No featured article available') {
-            featuredArticle.relatedArticles = await getRelatedArticles(featuredArticle.title, 1, maxDepth); // Pass the maxDepth here
-        }
+        fs.writeFileSync('featured_article.json', JSON.stringify(featuredArticle, null, 2));
+        console.log('Featured article written to featured_article.json');
 
-        // Save the featured article and nested related articles to a JSON file
-        fs.writeFile('featuredArticleWithRelated.json', JSON.stringify(featuredArticle, null, 2), (err) => {
-            if (err) {
-                console.error('Error writing to file', err);
-            } else {
-                console.log('Featured article with related articles saved to featuredArticleWithRelated.json');
-            }
-        });
+        // Start recursive fetching
+        await fetchDepth();
+
     } catch (error) {
         console.log('Failed to fetch the featured article:', error.message);
     }
 };
 
-getFeaturedArticle(4); // You can adjust the maxDepth parameter here
+// Recursive function to fetch links for each link, respecting depth
+const fetchDepth = async () => {
+    if (depth > MAX_DEPTH) {
+        console.log('Max depth reached, stopping recursion.');
+        return;
+    }
 
+    depth += 1;
+    console.log(`Fetching depth level: ${depth}`);
+
+    try {
+        const data = fs.readFileSync('featured_article.json', 'utf8');
+        const featuredArticle = JSON.parse(data); // Parse the JSON string into an object
+
+        // Fetch links for each article link recursively
+        for (const lk of featuredArticle.links) {
+            const apiUrl = `https://en.wikipedia.org/w/api.php?action=query&format=json&prop=links&titles=${encodeURIComponent(lk.title)}&formatversion=2&pllimit=max`;
+            const subLinks = await fetchLinks(apiUrl);
+            lk.links = subLinks; // Add sub-links to the article link
+
+            // Write the updated structure back to the file
+            fs.writeFileSync('featured_article.json', JSON.stringify(featuredArticle, null, 2));
+
+            // Recursively fetch sub-links if depth allows
+            await fetchDepth();
+        }
+    } catch (error) {
+        console.log('Error reading or updating the file:', error.message);
+    }
+};
+
+// Start the server
 app.listen(port, () => {
     console.log(`Server is running on port ${port}`);
 });
+
+// Fetch the featured article on startup
+fetchFeaturedArticle();
